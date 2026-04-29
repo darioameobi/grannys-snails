@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Granny's Snails</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Boogaloo&family=Bubblegum+Sans&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a0a2e; display: flex; justify-content: center; align-items: center; min-height: 100vh; font-family: 'Bubblegum Sans', cursive; overflow: hidden; }
+  canvas { border: 4px solid #000; border-radius: 8px; box-shadow: 0 0 40px rgba(255,200,0,0.3); touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; width: min(100vw, calc(100vh * 1.5)); height: min(100vh, calc(100vw / 1.5)); opacity: 0; transition: opacity 0.15s; }
+</style>
+</head>
+<body>
+<canvas id="game" width="900" height="600"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ═══ DPI SCALING ═══
+const GAME_W = 900, GAME_H = 600;
+const dpr = window.devicePixelRatio || 1;
+canvas.width = GAME_W * dpr;
+canvas.height = GAME_H * dpr;
+ctx.scale(dpr, dpr);
+
+// ═══ AUDIO ENGINE (Mario Kart style) ═══
+let audioCtx = null;
+
+// Called on EVERY user interaction — safe to call repeatedly
+// iOS needs resume() called inside a gesture, and may need multiple attempts
+function resumeAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return; }
+  }
+  // Always retry resume — iOS may need this called multiple times
+  if (audioCtx.state !== 'running') {
+    audioCtx.resume().catch(function(){});
+  }
+}
+
+function playTone(freq, duration, type = 'square', vol = 0.15, slide = 0) {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  try {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    if (slide) osc.frequency.linearRampToValueAtTime(freq + slide, audioCtx.currentTime + duration);
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + duration);
+  } catch(e) {}
+}
+
+function playNoise(duration, vol = 0.08) {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  try {
+    const bufferSize = audioCtx.sampleRate * duration;
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    const src = audioCtx.createBufferSource();
+    const gain = audioCtx.createGain();
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass'; filter.frequency.value = 800;
+    src.buffer = buffer;
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+    src.start(); src.stop(audioCtx.currentTime + duration);
+  } catch(e) {}
+}
+
+const SFX = {
+  keyPress(pitch) { playTone(300 + pitch * 8, 0.06, 'square', 0.1); },
+  superBoost() {
+    playTone(523, 0.1, 'square', 0.15);
+    setTimeout(() => playTone(659, 0.1, 'square', 0.15), 80);
+    setTimeout(() => playTone(784, 0.15, 'square', 0.18), 160);
+    setTimeout(() => playTone(1047, 0.25, 'square', 0.2), 250);
+  },
+  throw() {
+    playNoise(0.3, 0.12);
+    playTone(200, 0.4, 'sawtooth', 0.1, 600);
+  },
+  flying() { playNoise(0.15, 0.03); },
+  windGust() { playNoise(0.5, 0.1); playTone(150, 0.3, 'sine', 0.06, 80); },
+  bounce() { playTone(250, 0.15, 'square', 0.12, 200); playNoise(0.1, 0.08); },
+  land() {
+    playNoise(0.2, 0.15);
+    playTone(120, 0.3, 'square', 0.1, -50);
+  },
+  passLandmark() {
+    playTone(660, 0.08, 'square', 0.12);
+    setTimeout(() => playTone(880, 0.12, 'square', 0.12), 70);
+  },
+  victoryShort() {
+    const notes = [523, 659, 784, 1047];
+    notes.forEach((n, i) => setTimeout(() => playTone(n, 0.15, 'square', 0.13), i * 100));
+  },
+  victoryBig() {
+    const notes = [523, 659, 784, 1047, 1175, 1319, 1568];
+    notes.forEach((n, i) => setTimeout(() => playTone(n, 0.2, 'square', 0.14), i * 90));
+    setTimeout(() => { playTone(1568, 0.5, 'square', 0.16); playTone(1047, 0.5, 'square', 0.1); }, 650);
+  },
+  start() {
+    playTone(440, 0.12, 'square', 0.1);
+    setTimeout(() => playTone(550, 0.12, 'square', 0.1), 120);
+    setTimeout(() => playTone(660, 0.2, 'square', 0.13), 240);
+  },
+  headwind() { playTone(100, 0.4, 'sawtooth', 0.06, -30); },
+  tailwind() { playTone(300, 0.3, 'sine', 0.08, 150); },
+};
+
+// ═══ GAME STATE ═══
+const STATE = { TITLE: 0, CHARGING: 1, FLYING: 3, RESULT: 5 };
+let state = STATE.TITLE;
+let power = 0, maxPower = 100;
+let lastKey = null, keyCount = 0;
+let snailX = 0, snailY = 0, snailVX = 0, snailVY = 0;
+let cameraX = 0, distanceMiles = 0;
+let chargeTimer = 0, chargeTimeLimit = 180;
+let frameCount = 0, flyFrameCount = 0, snailRotation = 0;
+let trailParticles = [], landingBounces = 0;
+let bestDistance = 0, throwStarted = false;
+let cloudOffsets = [];
+let passedLandmarks = new Set();
+
+// Superboost
+let lastKeyTime = 0;
+let slowPressCount = 0;
+let superBoostActive = false;
+let superBoostFlash = 0;
+let rhythmGaps = [];
+
+// Lottery
+let luckMultiplier = 1.0;
+let windEvents = [];
+let luckLabel = '';
+let luckIcon = '';
+let activeWindGust = null;
+let windArrowTimer = 0;
+let currentWindLabel = '';
+let windMeterValue = 0; // -1 headwind, 0 calm, 1 tailwind
+let windMeterTarget = 0;
+
+const COLORS = {
+  sky: '#87CEEB', skyTop: '#4A90D9',
+  grass: '#4CAF50', grassDark: '#388E3C',
+  road: '#555555', roadLine: '#FFD700',
+  skin: '#FDDCB1', hair: '#C0C0C0', dress: '#9C27B0',
+  snailShell: '#D2691E', snailShellLight: '#F4A460',
+};
+
+const landmarks = [
+  { name: 'Handforth', dist: 0, icon: '🏘️', desc: 'Home of the legendary Parish Council Zoom call. "You have no authority here, Jackie Weaver!"' },
+  { name: 'Wilmslow', dist: 2, icon: '🏡', desc: 'Where Cheshire\'s footballers park their Bentleys. Average house price: best not to ask.' },
+  { name: 'Alderley Edge', dist: 5, icon: '⛰️', desc: 'Ancient sandstone escarpment. Legend says a wizard sleeps inside the hill with 140 knights.' },
+  { name: 'Monks Heath', dist: 9, icon: '⛪', desc: 'A quiet crossroads deep in the Cheshire countryside. Blink and you\'ll miss it.' },
+  { name: 'Congleton', dist: 16, icon: '🐻', desc: 'Known as "Beartown" — the town once sold its Bible to buy a dancing bear. Priorities.' },
+  { name: 'Scholar Green', dist: 21, icon: '🎓', desc: 'On the Cheshire-Staffordshire border, near the stunning Little Moreton Hall (built 1504).' },
+  { name: 'Talke', dist: 25, icon: '🗣️', desc: 'A former mining village in North Staffordshire. Yes, every single visitor makes the same pun.' },
+  { name: 'Newcastle-u-Lyme', dist: 32, icon: '🏰', desc: 'A market town since 1173 — centuries older than that other Newcastle. No Tyne Bridge though.' },
+  { name: 'Stone', dist: 42, icon: '🪨', desc: 'Brewing capital of Staffordshire. Joule\'s Brewery has poured pints here since 1780.' },
+  { name: 'Stafford', dist: 50, icon: '🏛️', desc: 'County town of Staffordshire with a Norman castle. Birthplace of Izaak Walton, patron saint of fishing.' },
+  { name: 'Cannock', dist: 60, icon: '🌲', desc: 'Gateway to Cannock Chase AONB — 26 square miles of heathland, forest, and wild fallow deer.' },
+  { name: 'Walsall', dist: 68, icon: '⚽', desc: 'Historic centre of British leather-working and home to the Saddlers FC at Bescot Stadium.' },
+  { name: 'Birmingham', dist: 78, icon: '🏙️', desc: 'England\'s second city! More canals than Venice, birthplace of Balti, and home to Cadbury World.' },
+  { name: 'Solihull', dist: 85, icon: '🛍️', desc: 'Home to the NEC, Birmingham Airport, and Land Rover HQ. Officially "posh West Midlands."' },
+  { name: 'Stratford-upon-Avon', dist: 95, icon: '🎭', desc: 'Birthplace of Shakespeare in 1564. "To throw, or not to throw" — not a question for Granny.' },
+  { name: 'Chipping Norton', dist: 108, icon: '🐑', desc: 'Heart of the Cotswolds and the "Chipping Norton Set." Honey-stone villages and media moguls.' },
+  { name: 'Oxford', dist: 118, icon: '📚', desc: 'City of dreaming spires — 39 colleges, the Bodleian Library, and Inspector Morse\'s favourite pubs.' },
+  { name: 'Abingdon', dist: 123, icon: '🍺', desc: 'Claims to be the oldest continuously inhabited town in England. Former home of the MG car factory.' },
+  { name: 'Didcot', dist: 130, icon: '🚂', desc: 'Famous for its railway heritage centre. Self-proclaimed "Tenerife of the South."' },
+  { name: 'Newbury', dist: 145, icon: '🐎', desc: 'A racecourse town with two English Civil War battlefields and Vodafone\'s global HQ.' },
+  { name: 'Whitchurch', dist: 153, icon: '🏘️', desc: 'A Hampshire village with the UK\'s oldest working silk mill, weaving since 1820.' },
+  { name: 'Winchester', dist: 162, icon: '👑', desc: 'The ancient capital of England! King Alfred\'s city, the Round Table, and the end of the A34. LEGENDARY!' },
+];
+
+const MILE_TO_PX = 80;
+const GROUND_Y = 440;
+
+for (let i = 0; i < 30; i++) {
+  cloudOffsets.push({ x: Math.random()*15000, y: 40+Math.random()*120, size: 30+Math.random()*50, speed: 0.1+Math.random()*0.3 });
+}
+
+// ═══ STORAGE ═══
+async function loadBest() { try { const r = await window.storage.get('grannys-snails-best'); if (r&&r.value) bestDistance=parseFloat(r.value)||0; } catch(e){} }
+async function saveBest() { try { await window.storage.set('grannys-snails-best', String(bestDistance)); } catch(e){} }
+loadBest();
+
+// ═══ DRAWING HELPERS ═══
+function roundRect(x,y,w,h,r,fill,stroke,lw) {
+  ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
+  if(fill){ctx.fillStyle=fill;ctx.fill();}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=lw||2;ctx.stroke();}
+}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+function drawSky() {
+  const g=ctx.createLinearGradient(0,0,0,GROUND_Y);
+  g.addColorStop(0,COLORS.skyTop);g.addColorStop(1,COLORS.sky);
+  ctx.fillStyle=g;ctx.fillRect(0,0,900,GROUND_Y);
+}
+function drawClouds() {
+  ctx.fillStyle='rgba(255,255,255,0.85)';
+  cloudOffsets.forEach(c=>{
+    let cx=(c.x-cameraX*0.15+frameCount*c.speed)%1200-150;
+    ctx.beginPath();
+    ctx.arc(cx,c.y,c.size*0.5,0,Math.PI*2);
+    ctx.arc(cx+c.size*0.4,c.y-c.size*0.2,c.size*0.4,0,Math.PI*2);
+    ctx.arc(cx+c.size*0.8,c.y,c.size*0.45,0,Math.PI*2);
+    ctx.fill();
+  });
+}
+function drawGround() {
+  const g=ctx.createLinearGradient(0,GROUND_Y,0,600);
+  g.addColorStop(0,COLORS.grass);g.addColorStop(1,COLORS.grassDark);
+  ctx.fillStyle=g;ctx.fillRect(0,GROUND_Y,900,160);
+  ctx.fillStyle=COLORS.road;ctx.fillRect(0,GROUND_Y-5,900,30);
+  ctx.strokeStyle='#000';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,GROUND_Y-5);ctx.lineTo(900,GROUND_Y-5);
+  ctx.moveTo(0,GROUND_Y+25);ctx.lineTo(900,GROUND_Y+25);ctx.stroke();
+  ctx.strokeStyle=COLORS.roadLine;ctx.lineWidth=3;ctx.setLineDash([20,15]);
+  ctx.beginPath();ctx.moveTo(0,GROUND_Y+10);ctx.lineTo(900,GROUND_Y+10);ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.save();ctx.fillStyle='#FFF';ctx.font='bold 11px Arial';ctx.globalAlpha=0.5;
+  for(let i=0;i<50;i++){let rx=(i*300-cameraX%300+300)%(300*50)-300;
+    if(rx>-50&&rx<950)ctx.fillText('A34',rx+20,GROUND_Y+18);}
+  ctx.restore();
+}
+
+function drawLandmarks() {
+  ctx.font='bold 14px "Bubblegum Sans",cursive';
+  landmarks.forEach(lm=>{
+    let lx=lm.dist*MILE_TO_PX-cameraX;
+    if(lx>-120&&lx<1020){
+      // Bigger sign post
+      ctx.fillStyle='#8B4513';ctx.fillRect(lx+10,GROUND_Y-90,7,90);
+      ctx.strokeStyle='#000';ctx.lineWidth=2;ctx.strokeRect(lx+10,GROUND_Y-90,7,90);
+      // Bigger sign
+      ctx.font='bold 14px "Bubblegum Sans",cursive';
+      let tw=ctx.measureText(lm.name).width;
+      let signW=Math.max(tw+36,90);
+      roundRect(lx+13-signW/2,GROUND_Y-126,signW,42,6,'#006400','#FFF',2);
+      ctx.fillStyle='#FFF';ctx.textAlign='center';
+      ctx.font='bold 15px "Bubblegum Sans",cursive';
+      ctx.fillText(lm.name,lx+13,GROUND_Y-104);
+      ctx.font='13px "Bubblegum Sans",cursive';
+      ctx.fillText(lm.dist+' mi',lx+13,GROUND_Y-88);
+      ctx.textAlign='left';
+      ctx.font='28px serif';ctx.fillText(lm.icon,lx-2,GROUND_Y-130);
+      // Mini buildings
+      if(lm.dist>0){const r=mulberry32(lm.dist*1337);const n=2+Math.floor(r()*3);
+        for(let i=0;i<n;i++){let bx=lx-30+i*25+r()*10,bh=20+r()*30,bw=15+r()*10;
+          let cols=['#E8D44D','#FF6B6B','#87CEEB','#DDA0DD','#98FB98'];
+          ctx.fillStyle=cols[Math.floor(r()*cols.length)];
+          ctx.fillRect(bx,GROUND_Y-bh-30,bw,bh);
+          ctx.strokeStyle='#000';ctx.lineWidth=2;ctx.strokeRect(bx,GROUND_Y-bh-30,bw,bh);
+          ctx.fillStyle='#8B0000';ctx.beginPath();
+          ctx.moveTo(bx-3,GROUND_Y-bh-30);ctx.lineTo(bx+bw/2,GROUND_Y-bh-42);
+          ctx.lineTo(bx+bw+3,GROUND_Y-bh-30);ctx.closePath();ctx.fill();ctx.stroke();}}
+    }
+  });
+}
+
+// ═══ PROGRESS TRACKER HUD ═══
+function drawProgressTracker() {
+  let miles = Math.max(0,(snailX-120)/MILE_TO_PX);
+  let barX=50, barY=15, barW=800, barH=12;
+
+  // Background bar
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  ctx.beginPath();ctx.roundRect(barX,barY,barW,barH,6);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.roundRect(barX,barY,barW,barH,6);ctx.stroke();
+
+  // Filled portion
+  let fill = Math.min(1, miles/162);
+  if(fill>0){
+    let grad=ctx.createLinearGradient(barX,0,barX+barW*fill,0);
+    grad.addColorStop(0,'#4CAF50');grad.addColorStop(0.5,'#FFD700');grad.addColorStop(1,'#FF6B00');
+    ctx.fillStyle=grad;
+    ctx.beginPath();ctx.roundRect(barX,barY,barW*fill,barH,6);ctx.fill();
+  }
+
+  // Landmark dots
+  landmarks.forEach(lm=>{
+    let dx=barX+(lm.dist/162)*barW;
+    let passed=miles>=lm.dist;
+    ctx.fillStyle=passed?'#FFD700':'rgba(255,255,255,0.5)';
+    ctx.beginPath();ctx.arc(dx,barY+barH/2,passed?4:2.5,0,Math.PI*2);ctx.fill();
+    // Show name for key landmarks
+    if([0,32,78,118,145,162].includes(lm.dist)){
+      ctx.fillStyle=passed?'#FFD700':'rgba(255,255,255,0.6)';
+      ctx.font='9px "Bubblegum Sans",cursive';ctx.textAlign='center';
+      ctx.fillText(lm.name,dx,barY+barH+11);ctx.textAlign='left';
+    }
+  });
+
+  // Snail position marker
+  let snailDotX=barX+fill*barW;
+  ctx.fillStyle='#FF3333';
+  ctx.beginPath();ctx.arc(snailDotX,barY+barH/2,5,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#FFF';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.arc(snailDotX,barY+barH/2,5,0,Math.PI*2);ctx.stroke();
+
+  // Distance text
+  roundRect(370,32,160,28,6,'rgba(0,0,0,0.6)','#FFD700',1.5);
+  ctx.fillStyle='#FFD700';ctx.font='bold 18px "Bubblegum Sans",cursive';ctx.textAlign='center';
+  ctx.fillText(miles.toFixed(1)+' / 162 miles',450,53);ctx.textAlign='left';
+}
+
+// ═══ WIND METER ═══
+function drawWindMeter() {
+  // Smooth interpolation
+  windMeterValue += (windMeterTarget - windMeterValue) * 0.1;
+
+  let mx=770, my=75, mw=110, mh=40;
+  roundRect(mx,my,mw,mh,8,'rgba(0,0,0,0.7)','rgba(255,255,255,0.3)',1);
+
+  // Label
+  ctx.fillStyle='#FFF';ctx.font='bold 11px "Bubblegum Sans",cursive';ctx.textAlign='center';
+  ctx.fillText('WIND',mx+mw/2,my+13);
+
+  // Meter bar
+  let barX=mx+10, barY=my+18, barW=mw-20, barH=8;
+  ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.beginPath();ctx.roundRect(barX,barY,barW,barH,4);ctx.fill();
+
+  // Center line
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.fillRect(barX+barW/2-1,barY-2,2,barH+4);
+
+  // Wind indicator
+  let center=barX+barW/2;
+  let offset=windMeterValue*(barW/2)*0.8;
+  let indicatorX=center+offset;
+  let color=windMeterValue>0.1?'#98FB98':windMeterValue<-0.1?'#FF6B6B':'#FFF';
+  ctx.fillStyle=color;
+  ctx.beginPath();ctx.arc(indicatorX,barY+barH/2,5,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#FFF';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(indicatorX,barY+barH/2,5,0,Math.PI*2);ctx.stroke();
+
+  // Label below
+  let windText=windMeterValue>0.3?'TAILWIND':windMeterValue<-0.3?'HEADWIND':'CALM';
+  ctx.fillStyle=color;ctx.font='bold 9px "Bubblegum Sans",cursive';
+  ctx.fillText(windText,mx+mw/2,my+mh-2);
+  ctx.textAlign='left';
+}
+
+// ═══ WIND VISUAL EFFECTS ═══
+function drawWindEffects() {
+  if(!activeWindGust) { windMeterTarget=0; currentWindLabel=''; return; }
+  windArrowTimer++;
+  windMeterTarget=Math.max(-1,Math.min(1,activeWindGust.forceX/3));
+
+  // Wind streaks across the whole screen
+  let isGood=activeWindGust.forceX>0;
+  let col=isGood?'rgba(152,251,152,':'rgba(255,107,107,';
+  ctx.lineWidth=2;
+  for(let i=0;i<12;i++){
+    let wx=(Math.random()*1000);
+    let wy=80+Math.random()*320;
+    let len=activeWindGust.forceX*20;
+    let alpha=0.15+Math.random()*0.25;
+    ctx.strokeStyle=col+alpha+')';
+    ctx.beginPath();ctx.moveTo(wx,wy);ctx.lineTo(wx+len,wy+activeWindGust.forceY*3);ctx.stroke();
+  }
+
+  // Big central wind label
+  let alpha2=Math.sin(windArrowTimer*0.12)*0.2+0.8;
+  ctx.globalAlpha=alpha2;
+  let wl=activeWindGust.forceX>1.5?'💨💨 STRONG TAILWIND!':
+    activeWindGust.forceX>0.3?'💨 Tailwind':
+    activeWindGust.forceX<-1.5?'🌧️🌧️ STRONG HEADWIND!':
+    activeWindGust.forceX<-0.3?'🌧️ Headwind':
+    activeWindGust.forceY<-1?'⬆️ UPDRAFT!':'💨 Gust';
+  ctx.fillStyle=isGood?'#98FB98':'#FF6B6B';
+  ctx.font='bold 20px "Bubblegum Sans",cursive';ctx.textAlign='center';
+  // Background for readability
+  let twid=ctx.measureText(wl).width;
+  roundRect(450-twid/2-12,555,twid+24,30,8,isGood?'rgba(0,80,0,0.7)':'rgba(100,0,0,0.7)',null);
+  ctx.fillStyle=isGood?'#98FB98':'#FF6B6B';
+  ctx.fillText(wl,450,577);
+  ctx.textAlign='left';ctx.globalAlpha=1;
+}
+
+// ═══ CHARACTER DRAWING ═══
+function drawGranny(x,y,throwing){
+  ctx.save();ctx.translate(x,y);
+  ctx.fillStyle='rgba(0,0,0,0.2)';ctx.beginPath();ctx.ellipse(0,5,25,6,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=COLORS.dress;ctx.strokeStyle='#000';ctx.lineWidth=3;
+  ctx.beginPath();ctx.moveTo(-18,-30);ctx.quadraticCurveTo(-22,0,-20,5);
+  ctx.lineTo(20,5);ctx.quadraticCurveTo(22,0,18,-30);ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.fillStyle='#E1BEE7';
+  for(let i=0;i<5;i++){ctx.beginPath();ctx.arc(-12+(i%3)*12,-20+Math.floor(i/3)*18,3,0,Math.PI*2);ctx.fill();}
+  if(throwing){
+    let aa=-0.8-(power/maxPower)*0.8;
+    ctx.save();ctx.translate(15,-35);ctx.rotate(aa);
+    ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(30,-5);ctx.lineTo(32,-3);ctx.lineTo(2,3);ctx.closePath();
+    ctx.fillStyle=COLORS.skin;ctx.fill();ctx.strokeStyle='#000';ctx.lineWidth=3;ctx.stroke();
+    drawSnail(30,-8,0.6,0);ctx.restore();
+  } else {
+    ctx.beginPath();ctx.moveTo(15,-35);ctx.lineTo(25,-15);ctx.lineTo(23,-12);ctx.lineTo(13,-32);ctx.closePath();
+    ctx.fillStyle=COLORS.skin;ctx.fill();ctx.strokeStyle='#000';ctx.lineWidth=3;ctx.stroke();
+  }
+  ctx.beginPath();ctx.moveTo(-15,-35);ctx.lineTo(-25,-15);ctx.lineTo(-23,-12);ctx.lineTo(-13,-32);ctx.closePath();
+  ctx.fillStyle=COLORS.skin;ctx.fill();ctx.strokeStyle='#000';ctx.lineWidth=3;ctx.stroke();
+  ctx.fillStyle=COLORS.skin;ctx.strokeStyle='#000';ctx.lineWidth=3;
+  ctx.beginPath();ctx.arc(0,-50,20,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.fillStyle=COLORS.hair;ctx.strokeStyle='#000';ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(0,-68,12,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.strokeStyle='#A0A0A0';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(0,-68,5,0,Math.PI*1.5);ctx.stroke();
+  ctx.fillStyle=COLORS.hair;ctx.strokeStyle='#000';ctx.lineWidth=2;
+  ctx.beginPath();ctx.ellipse(-17,-52,6,10,-0.3,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.beginPath();ctx.ellipse(17,-52,6,10,0.3,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.strokeStyle='#333';ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(-8,-52,7,0,Math.PI*2);ctx.stroke();
+  ctx.beginPath();ctx.arc(8,-52,7,0,Math.PI*2);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(-1,-52);ctx.lineTo(1,-52);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(-15,-52);ctx.lineTo(-19,-50);ctx.moveTo(15,-52);ctx.lineTo(19,-50);ctx.stroke();
+  ctx.fillStyle='#FFF';ctx.beginPath();ctx.arc(-8,-52,4,0,Math.PI*2);ctx.arc(8,-52,4,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#000';ctx.beginPath();ctx.arc(-7,-52,2,0,Math.PI*2);ctx.arc(9,-52,2,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#000';ctx.lineWidth=2;ctx.beginPath();ctx.arc(0,-46,8,0.1,Math.PI-0.1);ctx.stroke();
+  ctx.fillStyle='rgba(255,150,150,0.4)';
+  ctx.beginPath();ctx.ellipse(-14,-46,5,3,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(14,-46,5,3,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#333';ctx.strokeStyle='#000';ctx.lineWidth=2;
+  ctx.beginPath();ctx.ellipse(-10,8,10,5,0,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.beginPath();ctx.ellipse(10,8,10,5,0,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.restore();
+}
+
+function drawSnail(x,y,scale,rotation){
+  ctx.save();ctx.translate(x,y);ctx.scale(scale,scale);ctx.rotate(rotation);
+  ctx.fillStyle='#C9A84C';ctx.strokeStyle='#000';ctx.lineWidth=3;
+  ctx.beginPath();ctx.ellipse(0,8,22,8,0,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.fillStyle=COLORS.snailShell;ctx.beginPath();ctx.arc(0,-5,18,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.strokeStyle=COLORS.snailShellLight;ctx.lineWidth=2.5;
+  ctx.beginPath();ctx.arc(0,-5,12,0,Math.PI*1.8);ctx.stroke();
+  ctx.beginPath();ctx.arc(2,-5,7,0.5,Math.PI*1.5);ctx.stroke();
+  ctx.fillStyle='#C9A84C';ctx.beginPath();ctx.arc(20,2,8,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#000';ctx.lineWidth=2;ctx.stroke();
+  ctx.beginPath();ctx.moveTo(22,-2);ctx.lineTo(26,-14);ctx.moveTo(18,-2);ctx.lineTo(14,-14);ctx.stroke();
+  ctx.fillStyle='#FFF';ctx.beginPath();ctx.arc(26,-16,4,0,Math.PI*2);ctx.arc(14,-16,4,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#000';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.arc(26,-16,4,0,Math.PI*2);ctx.stroke();
+  ctx.beginPath();ctx.arc(14,-16,4,0,Math.PI*2);ctx.stroke();
+  ctx.fillStyle='#000';ctx.beginPath();ctx.arc(27,-16,2,0,Math.PI*2);ctx.arc(15,-16,2,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#000';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(22,4,4,0,Math.PI);ctx.stroke();
+  ctx.restore();
+}
+
+// ═══ POWER BAR ═══
+function drawPowerBar(){
+  let bx=60,by=40,bw=250,bh=30;
+  roundRect(bx,by,bw,bh,8,'#333','#000',3);
+  let fw=(power/maxPower)*(bw-6);
+  let fc=power<33?'#4CAF50':power<66?'#FF9800':'#F44336';
+  if(fw>0){ctx.fillStyle=fc;ctx.beginPath();ctx.roundRect(bx+3,by+3,fw,bh-6,6);ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.3)';ctx.beginPath();ctx.roundRect(bx+3,by+3,fw,(bh-6)/2,[6,6,0,0]);ctx.fill();}
+  ctx.fillStyle='#FFF';ctx.font='bold 16px "Bubblegum Sans",cursive';ctx.textAlign='center';
+  ctx.fillText('THROWING POWER',bx+bw/2,by+21);ctx.textAlign='left';
+
+  // Key indicators
+  let pulse=Math.sin(frameCount*0.15)*0.2+0.8;
+  ctx.globalAlpha=lastKey==='left'?1:0.4*(lastKey!=='left'?pulse:1);
+  roundRect(bx+bw+20,by-2,40,34,6,'#E0E0E0','#000',2);
+  ctx.fillStyle='#333';ctx.font='bold 18px Arial';ctx.textAlign='center';ctx.fillText('◀',bx+bw+40,by+23);
+  ctx.globalAlpha=lastKey==='right'?1:0.4*(lastKey!=='right'?pulse:1);
+  roundRect(bx+bw+68,by-2,40,34,6,'#E0E0E0','#000',2);
+  ctx.fillStyle='#333';ctx.fillText('▶',bx+bw+88,by+23);ctx.textAlign='left';ctx.globalAlpha=1;
+
+  // Timer bar
+  if(throwStarted){let tl=1-(chargeTimer/chargeTimeLimit),tw2=bw*tl;
+    ctx.fillStyle='rgba(255,255,255,0.2)';ctx.fillRect(bx,by+bh+5,bw,6);
+    ctx.fillStyle=tl>0.3?'#FFD700':'#FF3333';ctx.fillRect(bx,by+bh+5,tw2,6);
+    ctx.strokeStyle='#000';ctx.lineWidth=1;ctx.strokeRect(bx,by+bh+5,bw,6);}
+
+  // Superboost indicator
+  if(superBoostActive){
+    let sba=Math.sin(frameCount*0.2)*0.3+0.7;ctx.globalAlpha=sba;
+    roundRect(bx,by+bh+18,bw,22,6,'rgba(255,215,0,0.3)','#FFD700',2);
+    ctx.fillStyle='#FFD700';ctx.font='bold 13px "Bubblegum Sans",cursive';ctx.textAlign='center';
+    ctx.fillText('⚡ RHYTHM BONUS: SLOW & STEADY! ⚡',bx+bw/2,by+bh+34);
+    ctx.textAlign='left';ctx.globalAlpha=1;
+  } else if(throwStarted && slowPressCount>=2){
+    ctx.fillStyle='rgba(255,215,0,0.5)';ctx.font='12px "Bubblegum Sans",cursive';ctx.textAlign='center';
+    ctx.fillText('Good rhythm... keep it steady!',bx+bw/2,by+bh+32);ctx.textAlign='left';
+  }
+}
+
+// ═══ PARTICLES ═══
+function updateParticles(){trailParticles=trailParticles.filter(p=>p.life>0);
+  trailParticles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.05;p.life-=1;});}
+function drawParticles(){trailParticles.forEach(p=>{ctx.globalAlpha=p.life/p.maxLife;ctx.fillStyle=p.color;
+  ctx.beginPath();ctx.arc(p.x-cameraX,p.y,p.size,0,Math.PI*2);ctx.fill();});ctx.globalAlpha=1;}
+function addTrail(){let c=['#FFD700','#FF8C00','#98FB98','#87CEEB'];
+  trailParticles.push({x:snailX,y:snailY,vx:(Math.random()-0.5)*2,vy:(Math.random()-0.5)*2,
+    size:2+Math.random()*4,life:30+Math.random()*20,maxLife:50,color:c[Math.floor(Math.random()*c.length)]});}
+function addLanding(){for(let i=0;i<30;i++){
+  trailParticles.push({x:snailX,y:GROUND_Y,vx:(Math.random()-0.5)*8,vy:-Math.random()*8,
+    size:3+Math.random()*5,life:40+Math.random()*30,maxLife:70,
+    color:['#4CAF50','#8B4513','#FFD700','#555'][Math.floor(Math.random()*4)]});}}
+
+// ═══ LOTTERY ═══
+function generateLuck(){
+  let roll=Math.random();
+  if(roll<0.08){luckMultiplier=0.2+Math.random()*0.2;luckLabel='🌧️ GALE FORCE HEADWIND!';luckIcon='🌧️';
+  }else if(roll<0.20){luckMultiplier=0.45+Math.random()*0.25;luckLabel='💨 Headwind slows the snail...';luckIcon='💨';
+  }else if(roll<0.55){luckMultiplier=0.7+Math.random()*0.35;luckLabel='';luckIcon='';
+  }else if(roll<0.75){luckMultiplier=1.05+Math.random()*0.35;luckLabel='🍀 Tailwind! Catching a breeze!';luckIcon='🍀';
+  }else if(roll<0.90){luckMultiplier=1.4+Math.random()*0.5;luckLabel='🌪️ MEGA GUST! Snail is soaring!';luckIcon='🌪️';
+  }else{luckMultiplier=1.9+Math.random()*0.8;luckLabel='⚡ LEGENDARY THERMAL!!';luckIcon='⚡';}
+
+  // Add superboost multiplier on top
+  if(superBoostActive) luckMultiplier *= 1.4;
+
+  windEvents=[];
+  let n=2+Math.floor(Math.random()*5);
+  for(let i=0;i<n;i++){
+    windEvents.push({triggerFrame:20+Math.floor(Math.random()*300),
+      duration:25+Math.floor(Math.random()*80),
+      forceX:(Math.random()-0.35)*5,forceY:(Math.random()-0.55)*4,elapsed:0});
+  }
+}
+
+function wrapText(text,cx,startY,maxW,lh){
+  let words=text.split(' '),line='',y=startY;ctx.textAlign='center';
+  for(let i=0;i<words.length;i++){let test=line+words[i]+' ';
+    if(ctx.measureText(test).width>maxW&&i>0){ctx.fillText(line.trim(),cx,y);line=words[i]+' ';y+=lh;}
+    else{line=test;}}
+  ctx.fillText(line.trim(),cx,y);ctx.textAlign='left';
+}
+
+// ═══ SCREENS ═══
+function drawTitleScreen(){
+  drawSky();drawClouds();drawGround();
+  ctx.fillStyle='rgba(0,0,0,0.3)';ctx.fillRect(0,0,900,600);
+  let bounce=Math.sin(frameCount*0.04)*8;
+  ctx.save();ctx.strokeStyle='#000';ctx.lineWidth=6;
+  ctx.fillStyle='#FFD700';ctx.font='bold 72px "Boogaloo",cursive';ctx.textAlign='center';
+  ctx.strokeText("GRANNY'S",450,130+bounce);ctx.fillText("GRANNY'S",450,130+bounce);
+  ctx.fillStyle='#FF6B00';ctx.font='bold 80px "Boogaloo",cursive';
+  ctx.strokeText("SNAILS",450,210+bounce);ctx.fillText("SNAILS",450,210+bounce);ctx.restore();
+  drawGranny(200,GROUND_Y-5,false);drawSnail(650,GROUND_Y-25,1.8,0);
+  roundRect(240,268,420,80,8,'#006400','#FFF',2);
+  ctx.fillStyle='#FFF';ctx.font='18px "Bubblegum Sans",cursive';ctx.textAlign='center';
+  ctx.fillText('A34: Handforth → Winchester — 162 miles',450,292);
+  ctx.fillStyle='#FFD700';ctx.font='14px "Bubblegum Sans",cursive';
+  ctx.fillText('⚡ Random wind each throw — skill AND luck!',450,312);
+  ctx.fillText('🐌 Slow, rhythmic '+( isTouchDevice ? 'taps' : 'key presses')+' unlock a secret bonus...',450,332);
+  ctx.textAlign='left';
+  if(!isTouchDevice){let a=Math.sin(frameCount*0.08)*0.4+0.6;ctx.globalAlpha=a;
+  roundRect(300,380,300,50,12,'#FF3333','#000',3);
+  ctx.fillStyle='#FFF';ctx.font='bold 24px "Bubblegum Sans",cursive';ctx.textAlign='center';
+  ctx.fillText('Press SPACE to Start!',450,412);ctx.textAlign='left';ctx.globalAlpha=1;}
+  if(bestDistance>0){ctx.fillStyle='#FFD700';ctx.font='22px "Bubblegum Sans",cursive';ctx.textAlign='center';
+    ctx.fillText('🏆 Best: '+bestDistance.toFixed(1)+' miles',450,460);ctx.textAlign='left';}
+}
+
+function drawChargingScreen(){
+  drawSky();drawClouds();drawGround();drawLandmarks();
+  drawGranny(120-cameraX,GROUND_Y-5,true);drawPowerBar();
+  if(!throwStarted&&!isTouchDevice){let a=Math.sin(frameCount*0.1)*0.3+0.7;ctx.globalAlpha=a;
+    ctx.fillStyle='#FFF';ctx.font='bold 20px "Bubblegum Sans",cursive';ctx.textAlign='center';
+    ctx.fillText('Alternate ◀ and ▶ rapidly — or slow & steady for a bonus!',450,540);
+    ctx.font='15px "Bubblegum Sans",cursive';
+    ctx.fillText('3 seconds to charge!',450,562);ctx.textAlign='left';ctx.globalAlpha=1;}
+  if(!throwStarted&&isTouchDevice){let a=Math.sin(frameCount*0.1)*0.3+0.7;ctx.globalAlpha=a;
+    ctx.fillStyle='#FFF';ctx.font='bold 18px "Bubblegum Sans",cursive';ctx.textAlign='center';
+    ctx.fillText('Tap ◀ and ▶ below — alternate sides!',450,488);
+    ctx.textAlign='left';ctx.globalAlpha=1;}
+}
+
+function drawFlyingScreen(){
+  drawSky();drawClouds();drawGround();drawLandmarks();drawParticles();
+  drawWindEffects();
+  let sx=snailX-cameraX,sy=snailY;
+  ctx.save();snailRotation+=0.15;drawSnail(sx,sy,1.2,snailRotation);ctx.restore();
+
+  // HUDs
+  drawProgressTracker();
+  drawWindMeter();
+
+  // Luck label flash
+  if(luckLabel&&flyFrameCount<140){let a=Math.min(1,(140-flyFrameCount)/70);ctx.globalAlpha=a;
+    ctx.fillStyle=luckMultiplier>0.9?'#98FB98':'#FF6B6B';ctx.font='bold 24px "Bubblegum Sans",cursive';
+    ctx.textAlign='center';
+    let twid=ctx.measureText(luckLabel).width;
+    roundRect(450-twid/2-15,480,twid+30,36,8,'rgba(0,0,0,0.6)',null);
+    ctx.fillStyle=luckMultiplier>0.9?'#98FB98':'#FF6B6B';
+    ctx.fillText(luckLabel,450,507);
+    if(superBoostActive){ctx.fillStyle='#FFD700';ctx.font='bold 16px "Bubblegum Sans",cursive';
+      ctx.fillText('+ ⚡ RHYTHM BONUS ACTIVE!',450,530);}
+    ctx.textAlign='left';ctx.globalAlpha=1;}
+
+  // Speed lines
+  if(snailVX>5){ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=2;
+    for(let i=0;i<5;i++){let ly=sy-15+i*8;ctx.beginPath();
+      ctx.moveTo(sx-40-Math.random()*30,ly);ctx.lineTo(sx-70-Math.random()*50,ly);ctx.stroke();}}
+
+  // Flying sound
+  if(flyFrameCount%15===0&&snailVX>2) SFX.flying();
+}
+
+function drawResultScreen(){
+  drawSky();drawClouds();drawGround();drawLandmarks();drawParticles();
+  let sx=snailX-cameraX;drawSnail(sx,GROUND_Y-15,1.2,0);
+  let sp=Math.sin(frameCount*0.1)*5;
+  ctx.font='20px serif';
+  ctx.fillText('⭐',sx-25,GROUND_Y-40+sp);ctx.fillText('⭐',sx+20,GROUND_Y-50-sp);ctx.fillText('⭐',sx,GROUND_Y-60+sp*0.5);
+
+  roundRect(100,55,700,375,15,'rgba(0,0,0,0.88)','#FFD700',4);
+
+  let nearest=landmarks[0],nd=Infinity;
+  landmarks.forEach(lm=>{let d=Math.abs(distanceMiles-lm.dist);if(d<nd){nd=d;nearest=lm;}});
+
+  ctx.textAlign='center';
+  ctx.fillStyle='#FFD700';ctx.font='bold 38px "Boogaloo",cursive';
+  let title=distanceMiles>=160?'🏆 LEGENDARY! 🏆':distanceMiles>=100?'🎉 INCREDIBLE! 🎉':
+    distanceMiles>=50?'👏 GREAT THROW! 👏':distanceMiles>=20?'👍 NICE TRY! 👍':'😅 WEAK ARM, GRANNY!';
+  ctx.fillText(title,450,100);
+
+  ctx.fillStyle='#FFF';ctx.font='bold 32px "Bubblegum Sans",cursive';
+  ctx.fillText(distanceMiles.toFixed(1)+' miles',450,142);
+
+  if(luckLabel){ctx.fillStyle=luckMultiplier>0.9?'#98FB98':'#FF6B6B';ctx.font='15px "Bubblegum Sans",cursive';
+    let extraTxt=superBoostActive?' + ⚡ Rhythm Bonus':'';
+    ctx.fillText(luckLabel+extraTxt,450,165);}
+
+  ctx.fillStyle='#87CEEB';ctx.font='bold 22px "Bubblegum Sans",cursive';
+  if(nd<3){ctx.fillText('Landed at '+nearest.name+'! '+nearest.icon,450,200);}
+  else{let dir=distanceMiles>nearest.dist?'past':'before';
+    ctx.fillText(nd.toFixed(1)+' mi '+dir+' '+nearest.name+' '+nearest.icon,450,200);}
+
+  ctx.fillStyle='#FFD700';ctx.font='17px "Bubblegum Sans",cursive';
+  wrapText(nearest.desc,450,232,580,22);
+
+  let isNew=(distanceMiles>=bestDistance&&distanceMiles>0);
+  ctx.textAlign='center';
+  if(isNew){let fa=Math.sin(frameCount*0.12)*0.3+0.7;ctx.globalAlpha=fa;
+    ctx.fillStyle='#FF3333';ctx.font='bold 22px "Bubblegum Sans",cursive';
+    ctx.fillText('🎊 NEW BEST DISTANCE! 🎊',450,310);ctx.globalAlpha=1;}
+  else{ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='16px "Bubblegum Sans",cursive';
+    ctx.fillText('Best: '+bestDistance.toFixed(1)+' miles',450,310);}
+
+  // Mini progress bar on result
+  let rpX=200,rpW=500,rpY=335,rpH=8;
+  ctx.fillStyle='rgba(255,255,255,0.15)';ctx.beginPath();ctx.roundRect(rpX,rpY,rpW,rpH,4);ctx.fill();
+  let rpFill=Math.min(1,distanceMiles/162);
+  if(rpFill>0){ctx.fillStyle='#FFD700';ctx.beginPath();ctx.roundRect(rpX,rpY,rpW*rpFill,rpH,4);ctx.fill();}
+  ctx.fillStyle='#FFF';ctx.font='10px "Bubblegum Sans",cursive';ctx.textAlign='left';
+  ctx.fillText('Handforth',rpX,rpY+18);ctx.fillText('Winchester',rpX+rpW-30,rpY+18);
+
+  if(!isTouchDevice){let a4=Math.sin(frameCount*0.08)*0.3+0.7;ctx.globalAlpha=a4;
+  roundRect(300,370,300,45,10,'#FF3333','#000',3);
+  ctx.fillStyle='#FFF';ctx.font='bold 22px "Bubblegum Sans",cursive';ctx.textAlign='center';
+  ctx.fillText('Press SPACE to Retry!',450,400);ctx.globalAlpha=1;ctx.textAlign='left';}
+}
+
+// ═══ GAME LOGIC ═══
+function throwSnail(){
+  state=STATE.FLYING;flyFrameCount=0;passedLandmarks.clear();
+  generateLuck();
+  SFX.throw();
+  if(luckMultiplier>1.5) setTimeout(()=>SFX.tailwind(),300);
+  else if(luckMultiplier<0.5) setTimeout(()=>SFX.headwind(),300);
+
+  let throwPower=power/maxPower;
+  // Harder to reach Winchester: lower base speed
+  let baseSpeed=throwPower*18+1.5;
+  let speedFactor=baseSpeed*luckMultiplier;
+
+  snailX=150;snailY=GROUND_Y-80;
+  snailVX=speedFactor;snailVY=-speedFactor*0.6;snailRotation=0;
+}
+
+function update(){
+  frameCount++;
+  if(state===STATE.CHARGING){
+    if(throwStarted){chargeTimer++;power=Math.max(0,power-0.15);
+      if(chargeTimer>=chargeTimeLimit)throwSnail();}
+  }
+  if(state===STATE.FLYING){
+    flyFrameCount++;
+    activeWindGust=null;
+    windEvents.forEach(we=>{
+      if(flyFrameCount>=we.triggerFrame&&we.elapsed<we.duration){
+        snailVX+=we.forceX*0.07;snailVY+=we.forceY*0.05;
+        we.elapsed++;activeWindGust=we;
+        if(we.elapsed===1) SFX.windGust();
+      }
+    });
+    snailVY+=0.19;snailX+=snailVX;snailY+=snailVY;
+    snailVX*=0.9982; // slightly more drag
+
+    // Check if passed a landmark
+    let miles=Math.max(0,(snailX-120)/MILE_TO_PX);
+    landmarks.forEach(lm=>{
+      if(lm.dist>0&&miles>=lm.dist&&!passedLandmarks.has(lm.dist)){
+        passedLandmarks.add(lm.dist);SFX.passLandmark();}
+    });
+
+    let targetCam=snailX-300;
+    cameraX+=(targetCam-cameraX)*0.08;if(cameraX<0)cameraX=0;
+    if(frameCount%2===0)addTrail();
+    if(snailY>=GROUND_Y-15&&snailVY>0){
+      if(landingBounces<2&&snailVX>3){
+        snailY=GROUND_Y-15;snailVY=-snailVY*0.3;snailVX*=0.6;
+        landingBounces++;addLanding();SFX.bounce();
+      }else{
+        snailY=GROUND_Y-15;snailVX=0;snailVY=0;
+        distanceMiles=Math.max(0,(snailX-120)/MILE_TO_PX);
+        if(distanceMiles>162)distanceMiles=162;
+        if(distanceMiles>bestDistance){bestDistance=distanceMiles;saveBest();}
+        addLanding();SFX.land();
+        if(distanceMiles>=160)setTimeout(()=>SFX.victoryBig(),400);
+        else if(distanceMiles>=80)setTimeout(()=>SFX.victoryShort(),400);
+        state=STATE.RESULT;
+      }
+    }
+    if(snailY>700){
+      snailY=GROUND_Y-15;distanceMiles=Math.max(0,(snailX-120)/MILE_TO_PX);
+      if(distanceMiles>162)distanceMiles=162;
+      if(distanceMiles>bestDistance){bestDistance=distanceMiles;saveBest();}
+      SFX.land();state=STATE.RESULT;
+    }
+  }
+  updateParticles();
+}
+
+function draw(){
+  ctx.clearRect(0,0,900,600);ctx.save();
+  if(state===STATE.TITLE)drawTitleScreen();
+  else if(state===STATE.CHARGING)drawChargingScreen();
+  else if(state===STATE.FLYING)drawFlyingScreen();
+  else if(state===STATE.RESULT)drawResultScreen();
+  ctx.restore();
+  if(canvas.style.opacity==='0'||canvas.style.opacity==='')canvas.style.opacity='1';
+}
+
+function resetGame(){
+  state=STATE.CHARGING;power=0;lastKey=null;keyCount=0;
+  chargeTimer=0;throwStarted=false;
+  snailX=150;snailY=GROUND_Y-80;snailVX=0;snailVY=0;
+  cameraX=0;distanceMiles=0;landingBounces=0;snailRotation=0;
+  trailParticles=[];luckMultiplier=1;luckLabel='';luckIcon='';
+  windEvents=[];activeWindGust=null;windArrowTimer=0;flyFrameCount=0;
+  passedLandmarks.clear();
+  slowPressCount=0;superBoostActive=false;superBoostFlash=0;
+  rhythmGaps=[];lastKeyTime=0;windMeterValue=0;windMeterTarget=0;
+}
+
+// ═══ INPUT ═══
+document.addEventListener('keydown',(e)=>{
+  resumeAudio();
+  if(state===STATE.TITLE&&e.code==='Space'){e.preventDefault();SFX.start();resetGame();return;}
+  if(state===STATE.RESULT&&e.code==='Space'){e.preventDefault();SFX.start();resetGame();return;}
+  if(state===STATE.CHARGING){
+    e.preventDefault();
+    let now=performance.now();
+    let validPress=false;
+    if(e.code==='ArrowLeft'&&lastKey!=='left'){lastKey='left';validPress=true;}
+    else if(e.code==='ArrowRight'&&lastKey!=='right'){lastKey='right';validPress=true;}
+    if(validPress){
+      keyCount++;throwStarted=true;
+
+      // Superboost: track rhythm of key presses
+      if(lastKeyTime>0){
+        let gap=now-lastKeyTime;
+        rhythmGaps.push(gap);
+        // "Slow" press = 280-600ms gap (deliberate rhythm, not mashing)
+        if(gap>=280&&gap<=600){
+          slowPressCount++;
+          if(slowPressCount>=5&&!superBoostActive){
+            superBoostActive=true;SFX.superBoost();superBoostFlash=60;
+          }
+        }else{
+          // Reset if they break rhythm (too fast or too slow)
+          if(gap<200||gap>800){slowPressCount=Math.max(0,slowPressCount-2);}
+        }
+      }
+      lastKeyTime=now;
+
+      // Power per press: base + slight acceleration
+      let pressBonus=superBoostActive?5.5:3.2;
+      power=Math.min(maxPower,power+pressBonus+(keyCount*0.04));
+      SFX.keyPress(keyCount);
+    }
+  }
+});
+
+function gameLoop(){update();draw();drawTouchControls();requestAnimationFrame(gameLoop);}
+
+// ═══ TOUCH CONTROLS ═══
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+let touchLeftActive = false;
+let touchRightActive = false;
+
+// Convert touch/click position to canvas coordinates
+function getCanvasPos(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) * (GAME_W / rect.width),
+    y: (clientY - rect.top) * (GAME_H / rect.height)
+  };
+}
+
+// Touch button regions (drawn at bottom of canvas)
+const TB = {
+  // Left button: bottom-left area
+  left:  { x: 40,  y: 500, w: 180, h: 80 },
+  // Right button: bottom-right area
+  right: { x: 680, y: 500, w: 180, h: 80 },
+  // Center button (start/retry): bottom-center
+  center: { x: 300, y: 500, w: 300, h: 80 },
+};
+
+function hitTest(pos, btn) {
+  return pos.x >= btn.x && pos.x <= btn.x + btn.w &&
+         pos.y >= btn.y && pos.y <= btn.y + btn.h;
+}
+
+function drawTouchButton(btn, label, color, active) {
+  ctx.save();
+  ctx.globalAlpha = active ? 0.85 : 0.5;
+  roundRect(btn.x, btn.y, btn.w, btn.h, 16, color, '#FFF', 2);
+  ctx.globalAlpha = active ? 1 : 0.7;
+  ctx.fillStyle = '#FFF';
+  ctx.font = 'bold 28px "Bubblegum Sans",cursive';
+  ctx.textAlign = 'center';
+  ctx.fillText(label, btn.x + btn.w / 2, btn.y + btn.h / 2 + 10);
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
+function drawTouchControls() {
+  if (!isTouchDevice) return;
+
+  if (state === STATE.TITLE) {
+    drawTouchButton(TB.center, '▶  TAP TO START', '#FF3333', false);
+  } else if (state === STATE.CHARGING) {
+    drawTouchButton(TB.left, '◀  LEFT', '#336699', touchLeftActive);
+    drawTouchButton(TB.right, 'RIGHT  ▶', '#336699', touchRightActive);
+    // Rhythm hint
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = '#FFD700';
+    ctx.font = '14px "Bubblegum Sans",cursive';
+    ctx.textAlign = 'center';
+    ctx.fillText('Alternate taps! Slow & steady for bonus', 450, 595);
+    ctx.textAlign = 'left';
+    ctx.restore();
+  } else if (state === STATE.RESULT) {
+    drawTouchButton(TB.center, '🔄  TAP TO RETRY', '#FF3333', false);
+  }
+  // No buttons during flight — just watch the snail fly
+}
+
+function handleTouchCharge(side) {
+  resumeAudio();
+  let now = performance.now();
+  let validPress = false;
+  if (side === 'left' && lastKey !== 'left') { lastKey = 'left'; validPress = true; }
+  else if (side === 'right' && lastKey !== 'right') { lastKey = 'right'; validPress = true; }
+  if (validPress) {
+    keyCount++; throwStarted = true;
+    if (lastKeyTime > 0) {
+      let gap = now - lastKeyTime;
+      rhythmGaps.push(gap);
+      if (gap >= 280 && gap <= 600) {
+        slowPressCount++;
+        if (slowPressCount >= 5 && !superBoostActive) {
+          superBoostActive = true; SFX.superBoost(); superBoostFlash = 60;
+        }
+      } else {
+        if (gap < 200 || gap > 800) { slowPressCount = Math.max(0, slowPressCount - 2); }
+      }
+    }
+    lastKeyTime = now;
+    let pressBonus = superBoostActive ? 5.5 : 3.2;
+    power = Math.min(maxPower, power + pressBonus + (keyCount * 0.04));
+    SFX.keyPress(keyCount);
+  }
+}
+
+// Touch event listeners
+canvas.addEventListener('touchstart', (e) => {
+  resumeAudio();
+  e.preventDefault();
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const t = e.changedTouches[i];
+    const pos = getCanvasPos(t.clientX, t.clientY);
+
+    if (state === STATE.TITLE) {
+      if (hitTest(pos, TB.center)) { SFX.start(); resetGame(); }
+    } else if (state === STATE.RESULT) {
+      if (hitTest(pos, TB.center)) { SFX.start(); resetGame(); }
+    } else if (state === STATE.CHARGING) {
+      if (hitTest(pos, TB.left)) { touchLeftActive = true; handleTouchCharge('left'); }
+      else if (hitTest(pos, TB.right)) { touchRightActive = true; handleTouchCharge('right'); }
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  touchLeftActive = false;
+  touchRightActive = false;
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+}, { passive: false });
+
+gameLoop();
+</script>
+</body>
+</html>
